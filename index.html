@@ -223,6 +223,26 @@ tbody tr:hover{background:var(--accent-soft);}
 </style>
 </head>
 <body>
+<div class="overlay active" id="gateOverlay" style="z-index:200;">
+  <div class="modal" style="max-width:360px;">
+    <div class="modal-head">
+      <div>
+        <h2>Аналитический хаб PMO</h2>
+        <div class="idline">Общий доступ команды — введите пароль</div>
+      </div>
+    </div>
+    <div class="modal-body">
+      <form id="gateForm">
+        <div class="field">
+          <label>Пароль</label>
+          <input type="password" id="gatePassword" autocomplete="current-password" required>
+        </div>
+        <p class="cf-hint" id="gateError" style="display:none;color:#C0392B;"></p>
+        <button class="btn btn-primary" type="submit" id="gateSubmit" style="width:100%;margin-top:14px;">Войти</button>
+      </form>
+    </div>
+  </div>
+</div>
 <div class="app">
 
   <aside class="sidebar">
@@ -708,6 +728,63 @@ let modernYears = [2026];
 let currentModernYear = 2026;
 
 // ---------- CARD FIELD CONSTRUCTOR ----------
+// ---------- SHARED BACKEND (Supabase Edge Function) ----------
+const API_BASE = 'https://pzocyrdvgiownhbcxbbi.supabase.co/functions/v1/api';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB6b2N5cmR2Z2lvd25oYmN4YmJpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA5NDg0NjQsImV4cCI6MjEwNjUyNDQ2NH0.0zb7DgqPG76Aev1g5p2yBUM71F4pLTflfu327KpR2HA';
+const APP_PW_KEY = 'pmo_hub_pw';
+let appPassword = null;
+async function apiLogin(password){
+  const res = await fetch(API_BASE + '?action=login', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json', 'apikey': SUPABASE_ANON_KEY},
+    body: JSON.stringify({password})
+  });
+  if(!res.ok) return false;
+  const data = await res.json().catch(()=>({}));
+  return !!data.ok;
+}
+async function apiGetState(password){
+  const res = await fetch(API_BASE + '?action=state', {
+    headers: {'apikey': SUPABASE_ANON_KEY, 'x-app-password': password}
+  });
+  if(!res.ok) throw new Error('state fetch failed: ' + res.status);
+  return res.json();
+}
+async function apiSaveState(password, state){
+  const res = await fetch(API_BASE + '?action=state', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json', 'apikey': SUPABASE_ANON_KEY, 'x-app-password': password},
+    body: JSON.stringify(state)
+  });
+  if(!res.ok) throw new Error('state save failed: ' + res.status);
+  return res.json();
+}
+let syncTimer = null;
+function queueSync(){
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(doSync, 300);
+}
+async function doSync(){
+  if(!appPassword) return;
+  try{
+    await apiSaveState(appPassword, { data: DATA, modernYears, cardFields: cardFieldsConfig });
+  }catch(e){
+    console.warn('sync failed', e);
+    toast('Не удалось сохранить на сервере — проверь соединение');
+  }
+}
+async function fetchState(){
+  const state = await apiGetState(appPassword);
+  DATA = (Array.isArray(state.data) && state.data.length) ? state.data : JSON.parse(JSON.stringify(SEED_DATA));
+  modernYears = (Array.isArray(state.modernYears) && state.modernYears.length) ? state.modernYears : [2026];
+  DATA.forEach(p=>{ if(p.year>2025 && !modernYears.includes(p.year)) modernYears.push(p.year); });
+  modernYears = [...new Set(modernYears)].sort((a,b)=>a-b);
+  cardFieldsConfig = (state.cardFields && typeof state.cardFields==='object') ? state.cardFields : {};
+  if(!Array.isArray(state.data) || !state.data.length){
+    await doSync();
+  }
+}
+
 const CARD_FIELDS_KEY = 'pmo_hub_cardfields_v1';
 const DEFAULT_CARD_FIELDS = [
   {key:'price', label:'Сумма'},
@@ -717,15 +794,8 @@ const DEFAULT_CARD_FIELDS = [
   {key:'ticket', label:'YouGile'},
 ];
 let cardFieldsConfig = {};
-function loadCardFieldsConfig(){
-  try{
-    const raw = JSON.parse(localStorage.getItem(CARD_FIELDS_KEY));
-    if(raw && typeof raw === 'object') return raw;
-  }catch(e){ console.warn('localStorage read failed', e); }
-  return {};
-}
 function saveCardFieldsConfig(){
-  try{ localStorage.setItem(CARD_FIELDS_KEY, JSON.stringify(cardFieldsConfig)); }catch(e){ console.warn('localStorage write failed', e); }
+  queueSync();
 }
 function getCardFields(year){
   const cfg = cardFieldsConfig[year];
@@ -749,24 +819,14 @@ function formatCardFieldValue(p, key){
   return escapeHtml(String(val));
 }
 
-function loadData(){
-  try{
-    const raw = localStorage.getItem(LS_KEY);
-    if(raw){ DATA = JSON.parse(raw); return; }
-  }catch(e){ console.warn('localStorage read failed', e); }
-  DATA = JSON.parse(JSON.stringify(SEED_DATA));
-  saveData();
-}
 function saveData(){
-  try{ localStorage.setItem(LS_KEY, JSON.stringify(DATA)); }catch(e){ console.warn('localStorage write failed', e); }
+  queueSync();
 }
 function resetData(){
   DATA = JSON.parse(JSON.stringify(SEED_DATA));
-  saveData();
   modernYears = [2026];
-  saveModernYears();
   cardFieldsConfig = {};
-  saveCardFieldsConfig();
+  queueSync();
   currentModernYear = 2026;
   renderNav();
   setActiveNavBtn('pmodern', currentModernYear);
@@ -776,16 +836,8 @@ function resetData(){
   renderEverything();
   toast('Данные сброшены к исходным');
 }
-function loadModernYears(){
-  let years;
-  try{ years = JSON.parse(localStorage.getItem(MODERN_YEARS_KEY)); }catch(e){ years = null; }
-  if(!Array.isArray(years) || !years.length) years = [2026];
-  DATA.forEach(p=>{ if(p.year>2025 && !years.includes(p.year)) years.push(p.year); });
-  years = [...new Set(years)].sort((a,b)=>a-b);
-  return years;
-}
 function saveModernYears(){
-  try{ localStorage.setItem(MODERN_YEARS_KEY, JSON.stringify(modernYears)); }catch(e){ console.warn('localStorage write failed', e); }
+  queueSync();
 }
 
 function toast(msg){
@@ -1670,15 +1722,64 @@ function renderYearComparison(){
 
 
 // ---------- INIT ----------
-loadData();
-cardFieldsConfig = loadCardFieldsConfig();
-modernYears = loadModernYears();
-currentModernYear = Math.max(...modernYears);
-renderNav();
-setActiveNavBtn('pmodern', currentModernYear);
-populateModalYearSelect();
-fillPeriodSelects(currentModernYear);
-renderEverything();
+function showGate(){
+  document.getElementById('gateOverlay').classList.add('active');
+  document.getElementById('gatePassword').focus();
+}
+function hideGate(){
+  document.getElementById('gateOverlay').classList.remove('active');
+}
+async function bootApp(){
+  await fetchState();
+  currentModernYear = Math.max(...modernYears);
+  renderNav();
+  setActiveNavBtn('pmodern', currentModernYear);
+  populateModalYearSelect();
+  fillPeriodSelects(currentModernYear);
+  renderEverything();
+  hideGate();
+}
+document.getElementById('gateForm').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const pwInput = document.getElementById('gatePassword');
+  const btn = document.getElementById('gateSubmit');
+  const errEl = document.getElementById('gateError');
+  errEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Проверяем…';
+  try{
+    const ok = await apiLogin(pwInput.value);
+    if(!ok){
+      errEl.textContent = 'Неверный пароль';
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'Войти';
+      return;
+    }
+    appPassword = pwInput.value;
+    try{ localStorage.setItem(APP_PW_KEY, appPassword); }catch(err){}
+    await bootApp();
+  }catch(err){
+    console.error(err);
+    errEl.textContent = 'Не удалось связаться с сервером. Проверь интернет и попробуй снова.';
+    errEl.style.display = 'block';
+  }
+  btn.disabled = false; btn.textContent = 'Войти';
+});
+(async function init(){
+  let saved = null;
+  try{ saved = localStorage.getItem(APP_PW_KEY); }catch(e){}
+  if(saved){
+    appPassword = saved;
+    try{
+      await bootApp();
+      return;
+    }catch(e){
+      console.warn('stored password failed, showing gate', e);
+      appPassword = null;
+    }
+  }
+  showGate();
+})();
 
 })();
 </script>
