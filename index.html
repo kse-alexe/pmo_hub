@@ -183,6 +183,19 @@ tbody tr:hover{background:var(--accent-soft);}
 .field input, .field select, .field textarea{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:7px;padding:8px 10px;font-size:13px;font-family:inherit;width:100%;}
 .field textarea{resize:vertical;min-height:56px;}
 .field .hint{font-size:11px;color:var(--ink-soft);}
+.field label .hint{font-weight:400;margin-left:4px;}
+.tagbox{display:flex;flex-wrap:wrap;gap:4px;align-items:center;border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:4px 6px;min-height:36px;cursor:text;}
+.tagbox:focus-within{border-color:var(--accent);}
+.tagbox .tags{display:contents;}
+.tagbox .tag{display:inline-flex;align-items:center;gap:4px;background:var(--accent-soft);color:var(--ink);border-radius:999px;padding:3px 4px 3px 10px;font-size:12px;}
+.tagbox .tagx{border:none;background:transparent;color:var(--ink-soft);cursor:pointer;font-size:14px;line-height:1;padding:0 4px;border-radius:50%;}
+.tagbox .tagx:hover{color:var(--bad);}
+.field .tagbox input.taginput{border:none;background:transparent;padding:4px;flex:1;min-width:110px;width:auto;outline:none;font-size:13px;}
+.qbox{display:flex;flex-direction:column;gap:4px;}
+.qbox .qrow{display:flex;align-items:center;gap:6px;}
+.qbox .qyear{font-size:11px;color:var(--ink-soft);width:34px;}
+.qbox .qchip{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:999px;padding:4px 12px;font-size:12px;cursor:pointer;font-family:inherit;}
+.qbox .qchip.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);}
 .scoreblock{border:1px solid var(--line);border-radius:9px;padding:12px 14px;margin-bottom:10px;background:var(--bg);}
 .scoreblock h4{margin:0 0 8px;font-size:12.5px;display:flex;justify-content:space-between;}
 .scoreblock h4 .tot{font-family:'IBM Plex Mono',monospace;color:var(--accent);}
@@ -445,20 +458,20 @@ tbody tr:hover{background:var(--accent-soft);}
           <input type="text" id="f_product_other" placeholder="Впиши новый продукт" style="display:none;margin-top:6px;">
         </div>
         <div class="field">
-          <label>Проджект</label>
-          <input type="text" id="f_pm" list="pmList">
+          <label>Проджект <span class="hint">можно несколько</span></label>
+          <div class="tagbox" id="f_pm_box"></div><input type="hidden" id="f_pm">
         </div>
         <div class="field">
-          <label>Аккаунт</label>
-          <input type="text" id="f_account" list="accList">
+          <label>Аккаунт <span class="hint">можно несколько</span></label>
+          <div class="tagbox" id="f_account_box"></div><input type="hidden" id="f_account">
         </div>
         <div class="field">
-          <label>Куратор</label>
-          <input type="text" id="f_curator" list="curList">
+          <label>Куратор <span class="hint">можно несколько</span></label>
+          <div class="tagbox" id="f_curator_box"></div><input type="hidden" id="f_curator">
         </div>
         <div class="field">
-          <label>Фасилитаторы</label>
-          <input type="text" id="f_facilitators" list="facList">
+          <label>Фасилитаторы <span class="hint">можно несколько</span></label>
+          <div class="tagbox" id="f_facilitators_box"></div><input type="hidden" id="f_facilitators">
         </div>
         <div class="field">
           <label>Формат</label>
@@ -496,8 +509,8 @@ tbody tr:hover{background:var(--accent-soft);}
           <input type="text" id="f_marginPlan" class="mono">
         </div>
         <div class="field">
-          <label>Период проведения</label>
-          <select id="f_period"></select>
+          <label>Период проведения <span class="hint">можно несколько кварталов</span></label>
+          <div class="qbox" id="f_period_box"></div><input type="hidden" id="f_period">
         </div>
         <div class="field">
           <label>Период закрытия</label>
@@ -814,7 +827,8 @@ function formatCardFieldValue(p, key){
   const lower = key.toLowerCase();
   if(lower==='price') return fmtRub(val);
   if(lower.includes('margin')) return fmtPct(val);
-  if(key==='period' || key==='periodClose') return qOnly(val);
+  if(key==='period') return qLabel(p);
+  if(key==='periodClose') return qOnly(val);
   if(key==='closed') return val ? 'Закрыт' : 'В работе';
   return escapeHtml(String(val));
 }
@@ -866,10 +880,18 @@ function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;
 function escapeAttr(s){ return escapeHtml(s); }
 function numOrNull(v){ v = (v??'').toString().trim(); return v==='' ? null : Number(v); }
 function qOnly(period){ return period ? period.split(' ')[0] : '—'; }
+// Quarters a project was run in: `periods` (several) if set, otherwise the single `period`.
+function projQuarters(p){ return (Array.isArray(p.periods) && p.periods.length) ? p.periods : (p.period ? [p.period] : []); }
+function qLabel(p){ const qs = projQuarters(p); return qs.length ? qs.map(qOnly).join(' + ') : '—'; }
 
+function qualHasValues(q){
+  if(!q) return false;
+  return ['biz','client','team','mgmt'].some(b=> q[b] && Object.entries(q[b]).some(([k,v])=> k!=='total' && v!=null));
+}
 function effectiveCategory(p){
   if(p.category) return p.category;
-  if(p.qual && p.qual.totalScore!=null) return categoryFromScore(p.qual.totalScore);
+  // an unscored project (all items empty, total 0) has no category — not "Нежелательный"
+  if(p.qual && p.qual.totalScore!=null && (p.qual.totalScore>0 || qualHasValues(p.qual))) return categoryFromScore(p.qual.totalScore);
   return null;
 }
 function categoryFromScore(score){
@@ -1086,7 +1108,7 @@ function populateModalDatalists(){
 
 // ---------- QUARTER TABS ----------
 function quartersForYear(year){
-  return uniqueSorted(DATA.filter(p=>p.year===year).map(p=>p.period)).sort();
+  return uniqueSorted(DATA.filter(p=>p.year===year).flatMap(projQuarters)).sort();
 }
 function buildQuarterTabs(containerId, year, onChange){
   const el = document.getElementById(containerId);
@@ -1130,7 +1152,7 @@ function getFiltered2026(){
   const quarter = quarterState[year];
   return DATA.filter(p=>{
     if(p.year!==year) return false;
-    if(quarter && p.period!==quarter) return false;
+    if(quarter && !projQuarters(p).includes(quarter)) return false;
     if(client && p.client!==client) return false;
     if(product && p.product!==product) return false;
     if(pm && !(p.pm||'').includes(pm)) return false;
@@ -1193,7 +1215,7 @@ function getFiltered2025(){
   const quarter = quarterState[2025];
   return DATA.filter(p=>{
     if(p.year!==2025) return false;
-    if(quarter && p.period!==quarter) return false;
+    if(quarter && !projQuarters(p).includes(quarter)) return false;
     if(client && p.client!==client) return false;
     if(product && p.product!==product) return false;
     if(pm && !(p.pm||'').includes(pm)) return false;
@@ -1220,7 +1242,7 @@ function render2025(){
       <td>${escapeHtml(p.client||'—')}</td>
       <td>${escapeHtml(p.product||'—')}</td>
       <td>${escapeHtml(p.pm||'—')}</td>
-      <td class="mono">${qOnly(p.period)}</td>
+      <td class="mono">${qLabel(p)}</td>
       <td class="num" style="font-weight:700;">${fmtRub(p.price)}</td>
       <td class="num">${fmtPct(p.marginPlan)} / ${fmtPct(p.marginFact)}</td>
       <td class="num">${sat}</td>
@@ -1265,16 +1287,100 @@ function toggleQualSection(year){
   }
 }
 
-function fillPeriodSelects(year){
-  const y = year || Number(document.getElementById('f_year').value) || currentModernYear;
-  const opts = ['Q1','Q2','Q3','Q4'].map(q=>`<option value="${q} ${y}">${q}</option>`).join('');
-  ['f_period','f_periodClose'].forEach(id=>{
-    const sel = document.getElementById(id);
-    const prev = sel.value;
-    sel.innerHTML = '<option value="">—</option>' + opts;
-    if([...sel.options].some(o=>o.value===prev)) sel.value = prev;
+let periodsSel = [];
+function sortQuarters(arr){
+  return [...new Set(arr)].sort((a,b)=>{
+    const [qa,ya]=a.split(' '), [qb,yb]=b.split(' ');
+    return (Number(ya)-Number(yb)) || qa.localeCompare(qb);
   });
 }
+function renderPeriodChips(y){
+  const box = document.getElementById('f_period_box');
+  if(!box) return;
+  box.innerHTML = [y, y+1].map(yy=> `<div class="qrow"><span class="qyear">${yy}</span>` +
+    ['Q1','Q2','Q3','Q4'].map(q=>{
+      const v = `${q} ${yy}`;
+      return `<button type="button" class="qchip${periodsSel.includes(v)?' on':''}" data-q="${v}">${q}</button>`;
+    }).join('') + '</div>').join('');
+  box.querySelectorAll('.qchip').forEach(b=> b.addEventListener('click', ()=>{
+    const v = b.dataset.q;
+    periodsSel = periodsSel.includes(v) ? periodsSel.filter(x=>x!==v) : sortQuarters([...periodsSel, v]);
+    b.classList.toggle('on');
+    document.getElementById('f_period').value = periodsSel[0] || '';
+  }));
+  document.getElementById('f_period').value = periodsSel[0] || '';
+}
+function fillPeriodSelects(year){
+  const y = Number(year || document.getElementById('f_year').value || currentModernYear);
+  const opts = ['Q1','Q2','Q3','Q4'].map(q=>`<option value="${q} ${y}">${q}</option>`).join('');
+  const sel = document.getElementById('f_periodClose');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">—</option>' + opts;
+  if([...sel.options].some(o=>o.value===prev)) sel.value = prev;
+  periodsSel = periodsSel.filter(q=> q.endsWith(' '+y) || q.endsWith(' '+(y+1)));
+  renderPeriodChips(y);
+}
+// ---------- MULTI-NAME FIELDS (проджект / аккаунт / куратор / фасилитаторы) ----------
+const TAGBOX_LISTS = {f_pm:'pmList', f_account:'accList', f_curator:'curList', f_facilitators:'facList'};
+function splitNames(v){ return (v||'').split(',').map(x=>x.trim()).filter(Boolean); }
+function renderTagBox(id){
+  const box = document.getElementById(id+'_box');
+  if(!box) return;
+  const names = splitNames(document.getElementById(id).value);
+  box.querySelector('.tags').innerHTML = names.map((n,i)=>
+    `<span class="tag">${escapeHtml(n)}<button type="button" class="tagx" data-i="${i}" aria-label="Убрать">×</button></span>`).join('');
+}
+function refreshTagBoxes(){ Object.keys(TAGBOX_LISTS).forEach(renderTagBox); }
+function addTagNames(id, raw){
+  const hid = document.getElementById(id);
+  const cur = splitNames(hid.value);
+  splitNames(raw).forEach(n=>{ if(!cur.some(c=>c.toLowerCase()===n.toLowerCase())) cur.push(n); });
+  hid.value = cur.join(', ');
+  renderTagBox(id);
+}
+function flushTagInputs(){
+  Object.keys(TAGBOX_LISTS).forEach(id=>{
+    const inp = document.querySelector('#'+id+'_box .taginput');
+    if(inp && inp.value.trim()){ addTagNames(id, inp.value); inp.value=''; }
+  });
+}
+function initTagBoxes(){
+  Object.keys(TAGBOX_LISTS).forEach(id=>{
+    const box = document.getElementById(id+'_box');
+    if(!box || box.dataset.ready) return;
+    box.dataset.ready = '1';
+    box.innerHTML = '<span class="tags"></span><input type="text" class="taginput" list="'+TAGBOX_LISTS[id]+'" placeholder="добавить…" autocomplete="off">';
+    const inp = box.querySelector('.taginput');
+    box.addEventListener('click', e=>{
+      const x = e.target.closest('.tagx');
+      if(x){
+        const names = splitNames(document.getElementById(id).value);
+        names.splice(Number(x.dataset.i),1);
+        document.getElementById(id).value = names.join(', ');
+        renderTagBox(id);
+      } else inp.focus();
+    });
+    inp.addEventListener('keydown', e=>{
+      if(e.key==='Enter' || e.key===','){
+        e.preventDefault();
+        if(inp.value.trim()){ addTagNames(id, inp.value); inp.value=''; }
+      } else if(e.key==='Backspace' && !inp.value){
+        const names = splitNames(document.getElementById(id).value);
+        if(names.length){ names.pop(); document.getElementById(id).value = names.join(', '); renderTagBox(id); }
+      }
+    });
+    inp.addEventListener('input', e=>{
+      // picking a suggestion from the list (no typing event) or typing a comma adds the name right away
+      if(!e.inputType || e.inputType==='insertReplacementText' || inp.value.includes(',')){
+        if(inp.value.trim()){ addTagNames(id, inp.value); inp.value=''; }
+      }
+    });
+    inp.addEventListener('blur', ()=>{ if(inp.value.trim()){ addTagNames(id, inp.value); inp.value=''; } });
+  });
+  refreshTagBoxes();
+}
+initTagBoxes();
+
 fillPeriodSelects(2026);
 
 function openNewModal(year){
@@ -1318,6 +1424,7 @@ function clearForm(){
   document.getElementById('f_year').value = String(currentModernYear);
   document.getElementById('f_format').value = '';
   document.getElementById('f_participants').value = '';
+  periodsSel = [];
   document.getElementById('f_period').value = '';
   document.getElementById('f_periodClose').value = '';
   document.getElementById('f_closed').value = 'false';
@@ -1325,6 +1432,7 @@ function clearForm(){
   setOtherSelectValue('f_product', 'f_product_other', '');
   setOtherSelectValue('f_location', 'f_location_other', '');
   document.querySelectorAll('.scorerow select[data-blk]').forEach(s=> s.value = '0');
+  refreshTagBoxes();
   updateScoreTotals();
 }
 
@@ -1332,6 +1440,7 @@ function fillForm(p){
   document.getElementById('f_name').value = p.name||'';
   document.getElementById('f_id').value = p.id||'';
   document.getElementById('f_year').value = String(p.year||currentModernYear);
+  periodsSel = (Array.isArray(p.periods) && p.periods.length) ? sortQuarters(p.periods) : (p.period ? [p.period] : []);
   fillPeriodSelects(p.year||currentModernYear);
   document.getElementById('f_client').value = p.client||'';
   setOtherSelectValue('f_product', 'f_product_other', p.product||'');
@@ -1339,6 +1448,7 @@ function fillForm(p){
   document.getElementById('f_account').value = p.account||'';
   document.getElementById('f_curator').value = p.curator||'';
   document.getElementById('f_facilitators').value = p.facilitators||'';
+  refreshTagBoxes();
   document.getElementById('f_format').value = p.format||'';
   document.getElementById('f_participants').value = p.participants||'';
   setOtherSelectValue('f_location', 'f_location_other', p.location||'');
@@ -1441,6 +1551,7 @@ document.getElementById('btnSave').addEventListener('click', ()=>{
     }
   }
 
+  flushTagInputs();
   const rec = {
     id, name, year: yearVal,
     client: document.getElementById('f_client').value,
@@ -1457,7 +1568,7 @@ document.getElementById('btnSave').addEventListener('click', ()=>{
     price: num(document.getElementById('f_price').value),
     marginPlan: num(document.getElementById('f_marginPlan').value),
     marginFact: num(document.getElementById('f_marginFact').value),
-    period: document.getElementById('f_period').value,
+    period: sortQuarters(periodsSel)[0] || '',
     periodClose: document.getElementById('f_periodClose').value,
     closed: document.getElementById('f_closed').value === 'true',
     category: document.getElementById('f_category').value || null,
@@ -1465,6 +1576,9 @@ document.getElementById('btnSave').addEventListener('click', ()=>{
     folder: editingId ? (DATA.find(p=>p.id===editingId)||{}).folder || '' : '',
   };
 
+  if(periodsSel.length>1) rec.periods = sortQuarters(periodsSel);
+  const _old = editingId ? DATA.find(x=>x.id===editingId) : null;
+  if(_old && _old.qualFrom) rec.qualFrom = _old.qualFrom;
   if(editingId){
     const idx = DATA.findIndex(p=>p.id===editingId);
     DATA[idx] = rec;
@@ -1532,15 +1646,17 @@ function renderAnalytics(){
   ];
   document.getElementById('statTiles').innerHTML = tiles.map(t=>`<div class="stat"><div class="v">${t.v}</div><div class="l">${t.l}</div></div>`).join('');
 
-  const quarters = uniqueSorted(rows.map(p=>p.period)).sort();
+  // activity charts: a project counts in every quarter it ran; money charts: only in its start quarter (no double counting)
+  const quarters = sortQuarters(rows.flatMap(projQuarters));
+  const startQuarters = sortQuarters(rows.map(p=>p.period).filter(Boolean));
   destroyCharts();
 
   // margin chart
-  const planByQ = quarters.map(q=> avg(rows.filter(p=>p.period===q).map(p=>p.marginPlan).filter(v=>v!=null)) );
-  const factByQ = quarters.map(q=> avg(rows.filter(p=>p.period===q).map(p=>p.marginFact).filter(v=>v!=null)) );
+  const planByQ = startQuarters.map(q=> avg(rows.filter(p=>p.period===q).map(p=>p.marginPlan).filter(v=>v!=null)) );
+  const factByQ = startQuarters.map(q=> avg(rows.filter(p=>p.period===q).map(p=>p.marginFact).filter(v=>v!=null)) );
   charts.margin = new Chart(document.getElementById('chartMargin'), {
     type:'bar',
-    data:{ labels: quarters, datasets:[
+    data:{ labels: startQuarters, datasets:[
       {label:'План', data: planByQ, backgroundColor: MARGIN_PLAN_COLOR},
       {label:'Факт', data: factByQ, backgroundColor: MARGIN_FACT_COLOR},
     ]},
@@ -1549,18 +1665,18 @@ function renderAnalytics(){
 
   // qualification chart (stacked, 2026+ only)
   const cats = ['Удачный','Рабочий','Рискованный','Нежелательный'];
-  const qualRows = rows.filter(p=> effectiveCategory(p));
+  const qualRows = rows.filter(p=> effectiveCategory(p) && !p.qualFrom);
   charts.qual = new Chart(document.getElementById('chartQual'), {
     type:'bar',
     data:{ labels: quarters, datasets: cats.map(c=>({
       label:c, backgroundColor: CAT_HEX[c],
-      data: quarters.map(q=> qualRows.filter(p=>p.period===q && effectiveCategory(p)===c).length)
+      data: quarters.map(q=> qualRows.filter(p=>projQuarters(p).includes(q) && effectiveCategory(p)===c).length)
     }))},
     options: chartOpts({x:{stacked:true},y:{stacked:true, ticks:{precision:0}}})
   });
 
   renderProductCharts(rows, quarters);
-  renderClientRevenue(rows, quarters);
+  renderClientRevenue(rows, startQuarters);
 
   // curator chart (top 8 by volume)
   const curCounts = {};
@@ -1570,7 +1686,7 @@ function renderAnalytics(){
     type:'bar',
     data:{ labels: quarters, datasets: topCurators.map((cur,i)=>({
       label: cur, backgroundColor: BRAND_PALETTE[i%BRAND_PALETTE.length],
-      data: quarters.map(q=> rows.filter(p=>p.period===q && (p.curator||'').includes(cur)).length)
+      data: quarters.map(q=> rows.filter(p=>projQuarters(p).includes(q) && (p.curator||'').includes(cur)).length)
     }))},
     options: chartOpts({x:{stacked:true},y:{stacked:true, ticks:{precision:0}}})
   });
@@ -1601,7 +1717,7 @@ function productCounts(rowsSubset){
 function drawProductQuarterPie(rows){
   const sel = document.getElementById('productQuarterSel');
   const q = sel.value;
-  const subset = rows.filter(p=>p.period===q);
+  const subset = rows.filter(p=>projQuarters(p).includes(q));
   const counts = productCounts(subset);
   const labels = Object.keys(counts);
   if(charts.productQ) charts.productQ.destroy();
@@ -1695,7 +1811,7 @@ function renderYearComparison(){
 
   const qNums = ['Q1','Q2','Q3','Q4'];
   const yearColors = ['#C7C8D1', MARGIN_FACT_COLOR, '#21212C', '#C98A2B'];
-  const countByYQ = (y,q)=> byYear[y].filter(p=> (p.period||'').startsWith(q)).length;
+  const countByYQ = (y,q)=> byYear[y].filter(p=> projQuarters(p).some(x=>x.startsWith(q))).length;
   const avgPriceByYQ = (y,q)=> avg(byYear[y].filter(p=> (p.period||'').startsWith(q) && p.price!=null).map(p=>p.price));
 
   if(charts.yearCount) charts.yearCount.destroy();
