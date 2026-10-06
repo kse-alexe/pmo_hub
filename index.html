@@ -376,6 +376,25 @@ tbody tr:hover{background:var(--accent-soft);}
         </div>
       </div>
 
+      <div class="grid2">
+        <div class="panel">
+          <h3>Формат проведения</h3>
+          <p class="sub" id="fmtSub"></p>
+          <div class="chartbox"><canvas id="chartFormat"></canvas></div>
+        </div>
+        <div class="panel">
+          <h3>Место проведения</h3>
+          <p class="sub" id="locSub"></p>
+          <div class="chartbox"><canvas id="chartLocation"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Количество участников</h3>
+        <p class="sub" id="partSub"></p>
+        <div class="chartbox"><canvas id="chartParticipants"></canvas></div>
+      </div>
+
       <div class="panel">
         <h3>Сравнение по годам</h3>
         <p class="sub">Итоги по годам целиком и разбивка по одноимённым кварталам (напр. Q1 2025 vs Q1 2026 vs Q1 2027)</p>
@@ -1604,22 +1623,113 @@ document.getElementById('btnDelete').addEventListener('click', ()=>{
 // ---------- ANALYTICS ----------
 let charts = {};
 function destroyCharts(){ Object.values(charts).forEach(c=>c && c.destroy()); charts = {}; }
-function chartOpts(scaleOverrides){
-  return {
+// Draws the numbers right on the charts, so nobody has to hover to read them.
+// Enabled per chart through options.plugins.valueLabels = { format, stacked, totals }.
+function labelInkOn(bg){
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(bg||'').trim());
+  if(!m) return '#21212C';
+  const n = parseInt(m[1],16), r=(n>>16)&255, g=(n>>8)&255, b=n&255;
+  return (0.299*r + 0.587*g + 0.114*b) < 150 ? '#FFFFFF' : '#21212C';
+}
+const valueLabelsPlugin = {
+  id:'valueLabels',
+  afterDatasetsDraw(chart, args, opts){
+    if(!opts || opts.display===false) return;
+    const ctx = chart.ctx;
+    const fmt = opts.format || (v=>String(v));
+    const type = chart.config.type;
+    const horizontal = chart.options.indexAxis==='y';
+    const ink = (getComputedStyle(document.documentElement).getPropertyValue('--ink') || '#21212C').trim();
+    ctx.save();
+    ctx.font = '600 10.5px system-ui, -apple-system, "Segoe UI", sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    if(type==='doughnut' || type==='pie'){
+      const ds = chart.data.datasets[0], meta = chart.getDatasetMeta(0);
+      meta.data.forEach((arc,i)=>{
+        const v = ds.data[i];
+        if(!v) return;
+        const mid = (arc.innerRadius + arc.outerRadius)/2;
+        if((arc.endAngle-arc.startAngle)*mid < 20) return;   // slice too thin — the legend carries the number
+        const pos = arc.tooltipPosition();
+        const bg = Array.isArray(ds.backgroundColor) ? ds.backgroundColor[i] : ds.backgroundColor;
+        ctx.fillStyle = labelInkOn(bg);
+        ctx.fillText(fmt(v,0,i,chart), pos.x, pos.y);
+      });
+    } else if(opts.stacked){
+      const n = chart.data.labels.length;
+      for(let i=0;i<n;i++){
+        const segs = [];
+        chart.data.datasets.forEach((ds,di)=>{
+          const meta = chart.getDatasetMeta(di);
+          if(meta.hidden) return;
+          const v = ds.data[i], el = meta.data[i];
+          if(v && el) segs.push({v, el, ds});
+        });
+        if(!segs.length) continue;
+        const total = segs.reduce((a,b)=>a+b.v,0);
+        const top = Math.min(...segs.map(sg=>sg.el.y));
+        if(segs.length>1){
+          segs.forEach(sg=>{
+            const h = Math.abs(sg.el.base - sg.el.y);
+            if(h < 14) return;
+            ctx.fillStyle = labelInkOn(sg.ds.backgroundColor);
+            ctx.fillText(fmt(sg.v), sg.el.x, (sg.el.y + sg.el.base)/2);
+          });
+        }
+        if(opts.totals !== false){
+          ctx.fillStyle = ink;
+          ctx.fillText(fmt(total), segs[0].el.x, top - 9);
+        }
+      }
+    } else {
+      chart.data.datasets.forEach((ds,di)=>{
+        const meta = chart.getDatasetMeta(di);
+        if(meta.hidden) return;
+        meta.data.forEach((el,i)=>{
+          const v = ds.data[i];
+          if(v==null || (v===0 && !opts.showZero)) return;
+          ctx.fillStyle = ink;
+          if(horizontal){ ctx.textAlign='left'; ctx.fillText(fmt(v,di,i,chart), el.x + 6, el.y); }
+          else { ctx.textAlign='center'; ctx.fillText(fmt(v,di,i,chart), el.x, el.y - 9); }
+        });
+      });
+    }
+    ctx.restore();
+  }
+};
+Chart.register(valueLabelsPlugin);
+
+function chartOpts(scaleOverrides, valueLabels){
+  const o = {
     responsive:true, maintainAspectRatio:false,
-    plugins:{ legend:{ position:'bottom', labels:{ boxWidth:11, font:{size:11} } } },
+    layout:{ padding:{ top:14, right: 8 } },
+    plugins:{ legend:{ position:'bottom', labels:{ boxWidth:11, font:{size:11} } }, valueLabels: valueLabels || {display:false} },
     scales: Object.assign({
       x:{ grid:{display:false}, ticks:{font:{size:11}} },
       y:{ grid:{color:'rgba(120,120,130,.12)'}, ticks:{font:{size:11}} }
     }, scaleOverrides)
   };
+  if(o.scales.y && o.scales.y.grace==null) o.scales.y.grace = '12%';
+  return o;
 }
 function pieOpts(){
   return {
     responsive:true, maintainAspectRatio:false,
-    plugins:{ legend:{ position:'right', labels:{ boxWidth:11, font:{size:10.5}, padding:8 } } },
+    plugins:{
+      legend:{ position:'right', labels:{ boxWidth:11, font:{size:10.5}, padding:8,
+        // legend carries the numbers too: «12 (14%) · Название» — numbers first so a long name is the part that gets cut
+        generateLabels: ch=>{
+          const base = Chart.overrides.doughnut.plugins.legend.labels.generateLabels(ch);
+          const data = ch.data.datasets[0].data, tot = data.reduce((a,b)=>a+b,0) || 1;
+          base.forEach(l=>{ const v = data[l.index]; l.text = `${v} (${Math.round(v/tot*100)}%) · ${l.text}`; });
+          return base;
+        } } },
+      valueLabels:{ format: v=>v }
+    },
   };
 }
+const FMT_INT = v=> v;
+const FMT_PCT = v=> Math.round(v)+'%';
 
 function renderAnalytics(){
   const yearSel = document.getElementById('aYear');
@@ -1660,7 +1770,7 @@ function renderAnalytics(){
       {label:'План', data: planByQ, backgroundColor: MARGIN_PLAN_COLOR},
       {label:'Факт', data: factByQ, backgroundColor: MARGIN_FACT_COLOR},
     ]},
-    options: chartOpts({y:{ticks:{callback:v=>v+'%'}}})
+    options: chartOpts({y:{ticks:{callback:v=>v+'%'}}}, {format:FMT_PCT})
   });
 
   // qualification chart (stacked, 2026+ only)
@@ -1672,7 +1782,7 @@ function renderAnalytics(){
       label:c, backgroundColor: CAT_HEX[c],
       data: quarters.map(q=> qualRows.filter(p=>projQuarters(p).includes(q) && effectiveCategory(p)===c).length)
     }))},
-    options: chartOpts({x:{stacked:true},y:{stacked:true, ticks:{precision:0}}})
+    options: chartOpts({x:{stacked:true},y:{stacked:true, ticks:{precision:0}}}, {stacked:true, totals:true, format:FMT_INT})
   });
 
   renderProductCharts(rows, quarters);
@@ -1688,12 +1798,60 @@ function renderAnalytics(){
       label: cur, backgroundColor: BRAND_PALETTE[i%BRAND_PALETTE.length],
       data: quarters.map(q=> rows.filter(p=>projQuarters(p).includes(q) && (p.curator||'').includes(cur)).length)
     }))},
-    options: chartOpts({x:{stacked:true},y:{stacked:true, ticks:{precision:0}}})
+    options: chartOpts({x:{stacked:true},y:{stacked:true, ticks:{precision:0}}}, {stacked:true, totals:true, format:FMT_INT})
   });
+
+  renderRunCharts(rows);
 
   renderLoadTable('pmLoadTable', rows, 'pm', true);
   renderLoadTable('facLoadTable', rows, 'facilitators', false);
   renderYearComparison();
+}
+
+// ---------- формат / место / участники (поля из карточки проекта) ----------
+function countField(rows, key){
+  const c = {}; let filled = 0;
+  rows.forEach(p=>{ const v = String(p[key]||'').trim(); if(!v) return; filled++; c[v] = (c[v]||0) + 1; });
+  return {c, filled};
+}
+function optionOrder(selectId){ return [...document.querySelectorAll('#'+selectId+' option')].map(o=>o.value || o.textContent).filter(v=>v && v!=='—' && !v.startsWith('—')); }
+function wrapLabel(text, max){
+  const words = String(text).split(' '), lines = [''];
+  words.forEach(w=>{
+    const cur = lines[lines.length-1];
+    if(cur && (cur+' '+w).length > max) lines.push(w); else lines[lines.length-1] = cur ? cur+' '+w : w;
+  });
+  return lines.length>1 ? lines : lines[0];
+}
+function drawFieldChart(key, canvasId, subId, rows, o){
+  const {c, filled} = countField(rows, o.field);
+  let labels = Object.keys(c);
+  if(o.order){
+    const pos = v=>{ const i = o.order.indexOf(v); return i<0 ? 999 : i; };
+    labels.sort((a,b)=> pos(a)-pos(b) || c[b]-c[a]);
+  } else labels.sort((a,b)=> c[b]-c[a] || a.localeCompare(b,'ru'));
+  const total = labels.reduce((a,l)=>a+c[l],0) || 1;
+  document.getElementById(subId).textContent = rows.length
+    ? (filled ? `Заполнено у ${filled} из ${rows.length} проектов · ${o.hint}` : `Пока не заполнено ни у одного проекта — выбери значение в карточке проекта`)
+    : '';
+  const horizontal = !o.vertical;
+  charts[key] = new Chart(document.getElementById(canvasId), {
+    type:'bar',
+    data:{ labels: horizontal ? labels.map(l=>wrapLabel(l,26)) : labels, datasets:[{ data: labels.map(l=>c[l]), backgroundColor: MARGIN_FACT_COLOR, borderRadius:4 }] },
+    options:{
+      responsive:true, maintainAspectRatio:false, indexAxis: horizontal ? 'y' : 'x',
+      layout:{ padding: horizontal ? {right:78} : {top:20} },
+      plugins:{ legend:{display:false}, valueLabels:{ format:(v)=> `${v} · ${Math.round(v/total*100)}%` } },
+      scales: horizontal
+        ? { x:{ display:false, beginAtZero:true, grace:'5%' }, y:{ grid:{display:false}, ticks:{font:{size:11.5}} } }
+        : { x:{ grid:{display:false}, ticks:{font:{size:11.5}} }, y:{ display:false, beginAtZero:true, grace:'5%' } }
+    }
+  });
+}
+function renderRunCharts(rows){
+  drawFieldChart('fmt','chartFormat','fmtSub', rows, {field:'format', order: optionOrder('f_format'), hint:'число проектов и доля'});
+  drawFieldChart('loc','chartLocation','locSub', rows, {field:'location', hint:'число проектов и доля'});
+  drawFieldChart('part','chartParticipants','partSub', rows, {field:'participants', order: optionOrder('f_participants'), vertical:true, hint:'число проектов и доля'});
 }
 
 function renderProductCharts(rows, quarters){
@@ -1818,21 +1976,21 @@ function renderYearComparison(){
   charts.yearCount = new Chart(document.getElementById('chartYearCount'), {
     type:'bar',
     data:{ labels: qNums, datasets: years.map((y,i)=>({ label:y, backgroundColor: yearColors[i%yearColors.length], data: qNums.map(q=>countByYQ(y,q)) })) },
-    options: chartOpts({y:{ticks:{precision:0}}})
+    options: chartOpts({y:{ticks:{precision:0}}}, {format:FMT_INT})
   });
 
   if(charts.yearPrice) charts.yearPrice.destroy();
   charts.yearPrice = new Chart(document.getElementById('chartYearPrice'), {
     type:'bar',
     data:{ labels: years, datasets:[{ label:'Средняя цена проекта', backgroundColor: BRAND_PALETTE.slice(0,years.length), data: years.map(y=> avg(byYear[y].map(p=>p.price).filter(v=>v!=null))) }] },
-    options: Object.assign(chartOpts({y:{ticks:{callback:v=>fmtRubShort(v)}}}), {plugins:{legend:{display:false}}})
+    options: (()=>{ const o = chartOpts({y:{ticks:{callback:v=>fmtRubShort(v)}}}, {format:fmtRubShort}); o.plugins.legend = {display:false}; return o; })()
   });
 
   if(charts.yearPriceQ) charts.yearPriceQ.destroy();
   charts.yearPriceQ = new Chart(document.getElementById('chartYearPriceQuarter'), {
     type:'bar',
     data:{ labels: qNums, datasets: years.map((y,i)=>({ label:y, backgroundColor: yearColors[i%yearColors.length], data: qNums.map(q=>avgPriceByYQ(y,q)) })) },
-    options: chartOpts({y:{ticks:{callback:v=>fmtRubShort(v)}}})
+    options: chartOpts({y:{ticks:{callback:v=>fmtRubShort(v)}}}, {format:fmtRubShort})
   });
 }
 
