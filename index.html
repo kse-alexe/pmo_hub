@@ -128,6 +128,9 @@ tbody tr:hover{background:var(--accent-soft);}
 .pcard.st-closed{border-left-color:var(--ink-soft);background:var(--bg);}
 .pcard-name{font-weight:600;font-size:14px;margin-bottom:6px;line-height:1.35;}
 .pcard-price{font-family:'RR Opaque','IBM Plex Mono',monospace;font-weight:700;font-size:18px;color:var(--accent);margin-bottom:10px;}
+.pcard-pricebar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;}
+.pcard-pricebar .pcard-price{margin-bottom:0;}
+.pcard .tag{font-size:11px;padding:2px 8px;}
 .pcard-row{display:flex;justify-content:space-between;font-size:12.5px;gap:8px;margin-bottom:5px;}
 .pcard-k{color:var(--ink-soft);}
 .pcard-v{font-weight:500;text-align:right;}
@@ -1140,6 +1143,7 @@ function buildQuarterTabs(containerId, year, onChange){
   el.querySelectorAll('.qtab').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       quarterState[year] = btn.dataset.q;
+      el.querySelectorAll('.qtab').forEach(b=> b.classList.toggle('active', b===btn));
       onChange();
     });
   });
@@ -1152,7 +1156,7 @@ function populate2026Filters(){
   fillSelect('a_client', uniqueSorted(rows.map(p=>p.client)), 'Клиент: все');
   fillSelect('a_product', uniqueSorted(rows.map(p=>p.product)), 'Продукт: все');
   fillSelect('a_pm', uniqueSorted(rows.flatMap(p=>(p.pm||'').split(',').map(s=>s.trim()))), 'Проджект: все');
-  fillSelect('a_qual', ['Удачный','Рабочий','Рискованный','Нежелательный'], 'Квалификация: все');
+  fillSelect('a_qual', ['Удачный','Рабочий','Рискованный','Нежелательный','Без оценки'], 'Квалификация: все');
   if(!(year in quarterState)) quarterState[year] = '';
   buildQuarterTabs('a_qtabs', year, render2026);
 }
@@ -1175,7 +1179,7 @@ function getFiltered2026(){
     if(client && p.client!==client) return false;
     if(product && p.product!==product) return false;
     if(pm && !(p.pm||'').includes(pm)) return false;
-    if(qual && effectiveCategory(p)!==qual) return false;
+    if(qual && (effectiveCategory(p)||'Без оценки')!==qual) return false;
     if(status==='open' && p.closed) return false;
     if(status==='closed' && !p.closed) return false;
     if(q){
@@ -1185,6 +1189,7 @@ function getFiltered2026(){
     return true;
   }).sort((a,b)=> (b.period||'').localeCompare(a.period||'') || a.name.localeCompare(b.name,'ru'));
 }
+const QUAL_TAG = {'Удачный':'tag-ok','Рабочий':'tag-work','Рискованный':'tag-risk','Нежелательный':'tag-bad'};
 function render2026(){
   const year = currentModernYear;
   const rows = getFiltered2026();
@@ -1195,19 +1200,23 @@ function render2026(){
   const fields = getCardFields(year);
   grid.innerHTML = rows.map(p=>{
     const statusClass = p.closed ? 'st-closed' : 'st-work';
+    const cat = effectiveCategory(p);
+    const badge = `<span class="tag ${QUAL_TAG[cat]||'tag-neutral'}" title="Квалификация проекта">${cat ? escapeHtml(cat) : 'Без оценки'}</span>`;
+    let hasPrice = false;
     const body = fields.map(f=>{
       if(f.key==='ticket'){
         return p.ticket ? `<a href="${escapeAttr(p.ticket)}" target="_blank" rel="noopener" class="ticket-link" onclick="event.stopPropagation()">${escapeHtml(f.label)} ↗</a>` : '';
       }
       if(f.key==='price'){
         const val = getByPath(p,'price');
-        return `<div class="pcard-price">${val!=null ? fmtRub(val) : '—'}</div>`;
+        hasPrice = true;
+        return `<div class="pcard-pricebar"><div class="pcard-price">${val!=null ? fmtRub(val) : '—'}</div>${badge}</div>`;
       }
       return `<div class="pcard-row"><span class="pcard-k">${escapeHtml(f.label)}</span><span class="pcard-v">${formatCardFieldValue(p, f.key)}</span></div>`;
     }).join('');
     return `<div class="pcard ${statusClass}" data-id="${escapeAttr(p.id)}">
       <div class="pcard-name">${escapeHtml(p.name)}</div>
-      ${body}
+      ${hasPrice ? '' : `<div style="margin-bottom:8px">${badge}</div>`}${body}
     </div>`;
   }).join('');
   grid.querySelectorAll('.pcard').forEach(card=> card.addEventListener('click', ()=> openEditModal(card.dataset.id)));
@@ -1712,6 +1721,19 @@ function chartOpts(scaleOverrides, valueLabels){
   if(o.scales.y && o.scales.y.grace==null) o.scales.y.grace = '12%';
   return o;
 }
+const centerTotalPlugin = { id:'centerTotal', afterDraw(chart){
+  if(chart.config.type!=='doughnut') return;
+  const a = chart.chartArea, ds = chart.data.datasets[0]; if(!a||!ds) return;
+  const tot = ds.data.reduce((x,y)=>x+y,0), cx=(a.left+a.right)/2, cy=(a.top+a.bottom)/2, c=chart.ctx;
+  c.save(); c.textAlign='center'; c.textBaseline='middle';
+  const css = getComputedStyle(document.documentElement);
+  c.fillStyle = (css.getPropertyValue('--ink')||'#21212C').trim();
+  c.font = '700 26px "IBM Plex Mono",monospace'; c.fillText(tot, cx, cy-8);
+  c.fillStyle = (css.getPropertyValue('--ink-soft')||'#6B6B78').trim();
+  c.font = '500 11px Inter,sans-serif'; c.fillText('всего проектов', cx, cy+14);
+  c.restore();
+}};
+Chart.register(centerTotalPlugin);
 function pieOpts(){
   return {
     responsive:true, maintainAspectRatio:false,
