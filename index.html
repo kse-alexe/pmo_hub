@@ -194,6 +194,8 @@ tbody tr:hover{background:var(--accent-soft);}
 .tagbox .tagx{border:none;background:transparent;color:var(--ink-soft);cursor:pointer;font-size:14px;line-height:1;padding:0 4px;border-radius:50%;}
 .tagbox .tagx:hover{color:var(--bad);}
 .field .tagbox input.taginput{border:none;background:transparent;padding:4px;flex:1;min-width:110px;width:auto;outline:none;font-size:13px;}
+.fieldlink{font-size:11.5px;font-weight:600;margin-left:6px;color:var(--accent);text-decoration:none;}
+.fieldlink:hover{text-decoration:underline;}
 .qbox{display:flex;flex-direction:column;gap:4px;}
 .qbox .qrow{display:flex;align-items:center;gap:6px;}
 .qbox .qyear{font-size:11px;color:var(--ink-soft);width:34px;}
@@ -515,11 +517,11 @@ tbody tr:hover{background:var(--accent-soft);}
           <input type="text" id="f_location_other" placeholder="Впиши новое место проведения" style="display:none;margin-top:6px;">
         </div>
         <div class="field">
-          <label>Тикет (YouGile, ссылка)</label>
+          <label>Тикет (YouGile, ссылка) <a class="fieldlink" id="f_ticket_link" target="_blank" rel="noopener" style="display:none">Открыть ↗</a></label>
           <input type="text" id="f_ticket" placeholder="https://yougile.com/…">
         </div>
         <div class="field">
-          <label>Смета (файл)</label>
+          <label>Смета (файл) <a class="fieldlink" id="f_budgetFile_link" target="_blank" rel="noopener" style="display:none">Открыть ↗</a></label>
           <input type="text" id="f_budgetFile">
         </div>
         <div class="field">
@@ -536,7 +538,7 @@ tbody tr:hover{background:var(--accent-soft);}
         </div>
         <div class="field">
           <label>Период закрытия</label>
-          <select id="f_periodClose"></select>
+          <div class="qbox" id="f_periodClose_box"></div><input type="hidden" id="f_periodClose">
         </div>
         <div class="field">
           <label>Статус проекта</label>
@@ -661,6 +663,7 @@ tbody tr:hover{background:var(--accent-soft);}
                 <option value="Рабочий">Рабочий</option>
                 <option value="Рискованный">Рискованный</option>
                 <option value="Нежелательный">Нежелательный</option>
+                <option value="Пока не оценено">Пока не оценено</option>
               </select>
             </div>
             <div class="big" id="totalScoreVal">0</div>
@@ -740,6 +743,7 @@ const SEED_DATA =
 "use strict";
 
 const LS_KEY = 'pmo_hub_projects_v4';
+const NOT_RATED = 'Пока не оценено';
 const CAT_COLORS = {'Удачный':'ok','Рабочий':'work','Рискованный':'risk','Нежелательный':'bad'};
 const CAT_HEX = {'Удачный':'#2F8F5B','Рабочий':'#3B6FA0','Рискованный':'#C98A2B','Нежелательный':'#B33B3B'};
 const SCORE_BLOCKS = {
@@ -953,11 +957,11 @@ function qLabel(p){ const qs = projQuarters(p); return qs.length ? qs.map(qOnly)
 
 function qualHasValues(q){
   if(!q) return false;
-  return ['biz','client','team','mgmt'].some(b=> q[b] && Object.entries(q[b]).some(([k,v])=> k!=='total' && v!=null));
+  return ['biz','client','team','mgmt'].some(b=> q[b] && Object.entries(q[b]).some(([k,v])=> k!=='total' && Number(v)>0));
 }
 function effectiveCategory(p){
   if(p.category) return p.category;
-  // an unscored project (all items empty, total 0) has no category — not "Нежелательный"
+  // an unscored project (every item 0, total 0) has no category — it is «Пока не оценено», not "Нежелательный"
   if(p.qual && p.qual.totalScore!=null && (p.qual.totalScore>0 || qualHasValues(p.qual))) return categoryFromScore(p.qual.totalScore);
   return null;
 }
@@ -1201,7 +1205,7 @@ function populate2026Filters(){
   fillSelect('a_client', uniqueSorted(rows.map(p=>p.client)), 'Клиент: все');
   fillSelect('a_product', uniqueSorted(rows.map(p=>p.product)), 'Продукт: все');
   fillSelect('a_pm', uniqueSorted(rows.flatMap(p=>(p.pm||'').split(',').map(s=>s.trim()))), 'Проджект: все');
-  fillSelect('a_qual', ['Удачный','Рабочий','Рискованный','Нежелательный','Без оценки'], 'Квалификация: все');
+  fillSelect('a_qual', ['Удачный','Рабочий','Рискованный','Нежелательный',NOT_RATED], 'Квалификация: все');
   if(!(year in quarterState)) quarterState[year] = '';
   buildQuarterTabs('a_qtabs', year, render2026);
 }
@@ -1224,7 +1228,7 @@ function getFiltered2026(){
     if(client && p.client!==client) return false;
     if(product && p.product!==product) return false;
     if(pm && !(p.pm||'').includes(pm)) return false;
-    if(qual && (effectiveCategory(p)||'Без оценки')!==qual) return false;
+    if(qual && (effectiveCategory(p)||NOT_RATED)!==qual) return false;
     if(status==='open' && p.closed) return false;
     if(status==='closed' && !p.closed) return false;
     if(q){
@@ -1246,7 +1250,7 @@ function render2026(){
   grid.innerHTML = rows.map(p=>{
     const statusClass = p.closed ? 'st-closed' : 'st-work';
     const cat = effectiveCategory(p);
-    const badge = `<span class="tag ${QUAL_TAG[cat]||'tag-neutral'}" title="Квалификация проекта">${cat ? escapeHtml(cat) : 'Без оценки'}</span>`;
+    const badge = `<span class="tag ${QUAL_TAG[cat]||'tag-neutral'}" title="Квалификация проекта">${escapeHtml(cat || NOT_RATED)}</span>`;
     let hasPrice = false;
     const body = fields.map(f=>{
       if(f.key==='ticket'){
@@ -1383,13 +1387,25 @@ function renderPeriodChips(y){
   }));
   document.getElementById('f_period').value = periodsSel[0] || '';
 }
+function renderCloseChips(y){
+  const box = document.getElementById('f_periodClose_box'), hid = document.getElementById('f_periodClose');
+  if(!box) return;
+  y = Number(y || document.getElementById('f_year').value || currentModernYear);
+  const cur = hid.value, curYear = Number((cur.split(' ')[1])||0);
+  const years = [y, y+1]; if(curYear && !years.includes(curYear)) years.unshift(curYear);
+  box.innerHTML = years.map(yy=> `<div class="qrow"><span class="qyear">${yy}</span>` +
+    ['Q1','Q2','Q3','Q4'].map(q=>{
+      const v = `${q} ${yy}`;
+      return `<button type="button" class="qchip${cur===v?' on':''}" data-q="${v}">${q}</button>`;
+    }).join('') + '</div>').join('');
+  box.querySelectorAll('.qchip').forEach(b=> b.addEventListener('click', ()=>{
+    hid.value = hid.value===b.dataset.q ? '' : b.dataset.q;      // click again to clear
+    renderCloseChips(y);
+  }));
+}
 function fillPeriodSelects(year){
   const y = Number(year || document.getElementById('f_year').value || currentModernYear);
-  const opts = ['Q1','Q2','Q3','Q4'].map(q=>`<option value="${q} ${y}">${q}</option>`).join('');
-  const sel = document.getElementById('f_periodClose');
-  const prev = sel.value;
-  sel.innerHTML = '<option value="">—</option>' + opts;
-  if([...sel.options].some(o=>o.value===prev)) sel.value = prev;
+  renderCloseChips(y);
   periodsSel = periodsSel.filter(q=> q.endsWith(' '+y) || q.endsWith(' '+(y+1)));
   renderPeriodChips(y);
 }
@@ -1488,6 +1504,19 @@ function openEditModal(id){
 }
 function closeModal(){ overlay.classList.remove('active'); editingId=null; }
 
+function urlOf(v){
+  v = (v||'').trim();
+  if(/^https?:\/\/\S+$/i.test(v)) return v;
+  if(/^www\.\S+$/i.test(v)) return 'https://'+v;
+  return '';
+}
+function refreshFieldLinks(){
+  ['f_ticket','f_budgetFile'].forEach(id=>{
+    const a = document.getElementById(id+'_link'), u = urlOf(document.getElementById(id).value);
+    if(u){ a.href = u; a.style.display = 'inline'; } else { a.removeAttribute('href'); a.style.display = 'none'; }
+  });
+}
+['f_ticket','f_budgetFile'].forEach(id=> document.getElementById(id).addEventListener('input', refreshFieldLinks));
 function clearForm(){
   ['f_name','f_id','f_client','f_pm','f_account','f_curator','f_facilitators',
    'f_ticket','f_budgetFile','f_price','f_marginPlan','f_marginFact',
@@ -1500,11 +1529,13 @@ function clearForm(){
   periodsSel = [];
   document.getElementById('f_period').value = '';
   document.getElementById('f_periodClose').value = '';
+  renderCloseChips();
   document.getElementById('f_closed').value = 'false';
   document.getElementById('f_category').value = '';
   setOtherSelectValue('f_product', 'f_product_other', '');
   setOtherSelectValue('f_location', 'f_location_other', '');
   document.querySelectorAll('.scorerow select[data-blk]').forEach(s=> s.value = '0');
+  refreshFieldLinks();
   refreshTagBoxes();
   updateScoreTotals();
 }
@@ -1514,6 +1545,7 @@ function fillForm(p){
   document.getElementById('f_id').value = p.id||'';
   document.getElementById('f_year').value = String(p.year||currentModernYear);
   periodsSel = (Array.isArray(p.periods) && p.periods.length) ? sortQuarters(p.periods) : (p.period ? [p.period] : []);
+  document.getElementById('f_periodClose').value = p.periodClose||'';
   fillPeriodSelects(p.year||currentModernYear);
   document.getElementById('f_client').value = p.client||'';
   setOtherSelectValue('f_product', 'f_product_other', p.product||'');
@@ -1527,6 +1559,7 @@ function fillForm(p){
   setOtherSelectValue('f_location', 'f_location_other', p.location||'');
   document.getElementById('f_ticket').value = p.ticket||'';
   document.getElementById('f_budgetFile').value = p.budgetFile||'';
+  refreshFieldLinks();
   document.getElementById('f_price').value = p.price!=null ? p.price : '';
   document.getElementById('f_marginPlan').value = p.marginPlan!=null ? p.marginPlan : '';
   document.getElementById('f_marginFact').value = p.marginFact!=null ? p.marginFact : '';
@@ -1568,7 +1601,7 @@ function updateScoreTotals(){
   const hint = document.getElementById('categoryHint');
   if(anyScoreEntered()){
     hint.textContent = 'Автоматически по баллам: ' + suggested + '. При необходимости выбери другую квалификацию вручную выше.';
-    if(!catSelect.value) catSelect.value = suggested;
+    if(!catSelect.value || catSelect.value===NOT_RATED) catSelect.value = suggested;
   } else {
     hint.textContent = 'Проставь баллы — квалификация предложится автоматически.';
   }
@@ -1660,9 +1693,10 @@ document.getElementById('btnSave').addEventListener('click', ()=>{
     DATA.push(rec);
   }
   markDirty(rec.id);
+  const wasEdit = !!editingId;
   closeModal();
   renderEverything();
-  toast(editingId ? 'Изменения сохранены' : 'Проект добавлен');
+  toast(wasEdit ? 'Изменения сохранены' : 'Проект добавлен');
 });
 
 document.getElementById('btnDelete').addEventListener('click', ()=>{
@@ -1843,7 +1877,7 @@ function renderAnalytics(){
 
   // qualification chart (stacked, 2026+ only)
   const cats = ['Удачный','Рабочий','Рискованный','Нежелательный'];
-  const qualRows = rows.filter(p=> effectiveCategory(p) && !p.qualFrom);
+  const qualRows = rows.filter(p=> effectiveCategory(p) && effectiveCategory(p)!==NOT_RATED && !p.qualFrom);
   charts.qual = new Chart(document.getElementById('chartQual'), {
     type:'bar',
     data:{ labels: quarters, datasets: cats.map(c=>({
