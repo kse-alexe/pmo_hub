@@ -786,7 +786,7 @@ async function apiGetState(password){
   return res.json();
 }
 async function apiSaveState(password, state){
-  const res = await fetch(API_BASE + '?action=state', {
+  const res = await fetch(API_BASE + '?action=save', {
     method: 'POST',
     headers: {'Content-Type':'application/json', 'apikey': SUPABASE_ANON_KEY, 'x-app-password': password},
     body: JSON.stringify(state)
@@ -794,31 +794,78 @@ async function apiSaveState(password, state){
   if(!res.ok) throw new Error('state save failed: ' + res.status);
   return res.json();
 }
-let syncTimer = null;
+// Saving is per project: only records changed in THIS tab are sent, and the server merges them
+// into the shared state — two people / two open tabs can't overwrite each other any more.
+const dirtyIds = new Set(), removedIds = new Set();
+let metaDirty = false, syncTimer = null, syncing = false, syncAgain = false;
+function markDirty(id){ if(id==null) return; removedIds.delete(id); dirtyIds.add(id); queueSync(); }
+function markRemoved(id){ if(id==null) return; dirtyIds.delete(id); removedIds.add(id); queueSync(); }
 function queueSync(){
   clearTimeout(syncTimer);
   syncTimer = setTimeout(doSync, 300);
 }
 async function doSync(){
   if(!appPassword) return;
+  if(syncing){ syncAgain = true; return; }
+  if(!dirtyIds.size && !removedIds.size && !metaDirty) return;
+  syncing = true;
+  const ids = [...dirtyIds], rem = [...removedIds], meta = metaDirty;
+  dirtyIds.clear(); removedIds.clear(); metaDirty = false;
+  const payload = { upsert: DATA.filter(p=>ids.includes(p.id)), remove: rem };
+  if(meta){ payload.modernYears = modernYears; payload.cardFields = cardFieldsConfig; }
   try{
-    await apiSaveState(appPassword, { data: DATA, modernYears, cardFields: cardFieldsConfig });
+    await apiSaveState(appPassword, payload);
   }catch(e){
     console.warn('sync failed', e);
+    ids.forEach(i=>dirtyIds.add(i)); rem.forEach(i=>removedIds.add(i)); if(meta) metaDirty = true;
     toast('Не удалось сохранить на сервере — проверь соединение');
+  }finally{
+    syncing = false;
+    if(syncAgain){ syncAgain = false; queueSync(); }
   }
+}
+function applyRemoteState(state){
+  const remote = Array.isArray(state.data) ? state.data : [];
+  const byId = new Map(remote.map(p=>[p.id,p]));
+  const keep = DATA.filter(p=> dirtyIds.has(p.id));          // my unsaved edits win
+  const merged = remote.filter(p=> !dirtyIds.has(p.id)).concat(keep);
+  if(!metaDirty){
+    if(Array.isArray(state.modernYears) && state.modernYears.length) modernYears = state.modernYears.slice();
+    if(state.cardFields && typeof state.cardFields==='object') cardFieldsConfig = state.cardFields;
+  }
+  merged.forEach(p=>{ if(p.year>2025 && !modernYears.includes(p.year)) modernYears.push(p.year); });
+  modernYears = [...new Set(modernYears)].sort((a,b)=>a-b);
+  DATA = merged;
 }
 async function fetchState(){
   const state = await apiGetState(appPassword);
-  DATA = (Array.isArray(state.data) && state.data.length) ? state.data : JSON.parse(JSON.stringify(SEED_DATA));
-  modernYears = (Array.isArray(state.modernYears) && state.modernYears.length) ? state.modernYears : [2026];
-  DATA.forEach(p=>{ if(p.year>2025 && !modernYears.includes(p.year)) modernYears.push(p.year); });
-  modernYears = [...new Set(modernYears)].sort((a,b)=>a-b);
-  cardFieldsConfig = (state.cardFields && typeof state.cardFields==='object') ? state.cardFields : {};
   if(!Array.isArray(state.data) || !state.data.length){
+    DATA = JSON.parse(JSON.stringify(SEED_DATA));
+    modernYears = [2026]; cardFieldsConfig = {};
+    DATA.forEach(p=>dirtyIds.add(p.id)); metaDirty = true;
     await doSync();
+    return;
   }
+  applyRemoteState(state);
 }
+// pick up other people's edits: when the tab gets focus and once a minute
+let pulling = false;
+async function pullRemote(){
+  if(pulling || !appPassword || syncing || dirtyIds.size || removedIds.size || metaDirty) return;
+  if(document.getElementById('modalOverlay').classList.contains('active')) return;
+  pulling = true;
+  try{
+    const before = JSON.stringify([DATA, modernYears, cardFieldsConfig]);
+    applyRemoteState(await apiGetState(appPassword));
+    if(JSON.stringify([DATA, modernYears, cardFieldsConfig]) !== before){
+      renderNav(); renderEverything();
+    }
+  }catch(e){ console.warn('pull failed', e); }
+  finally{ pulling = false; }
+}
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) pullRemote(); });
+window.addEventListener('focus', pullRemote);
+setInterval(()=>{ if(!document.hidden) pullRemote(); }, 60000);
 
 const CARD_FIELDS_KEY = 'pmo_hub_cardfields_v1';
 const DEFAULT_CARD_FIELDS = [
@@ -830,7 +877,7 @@ const DEFAULT_CARD_FIELDS = [
 ];
 let cardFieldsConfig = {};
 function saveCardFieldsConfig(){
-  queueSync();
+  metaDirty = true; queueSync();
 }
 function getCardFields(year){
   const cfg = cardFieldsConfig[year];
@@ -855,14 +902,12 @@ function formatCardFieldValue(p, key){
   return escapeHtml(String(val));
 }
 
-function saveData(){
-  queueSync();
-}
+function saveData(){ /* per-project saving: see markDirty / markRemoved */ }
 function resetData(){
   DATA = JSON.parse(JSON.stringify(SEED_DATA));
   modernYears = [2026];
   cardFieldsConfig = {};
-  queueSync();
+  DATA.forEach(p=>markDirty(p.id)); metaDirty = true; queueSync();
   currentModernYear = 2026;
   renderNav();
   setActiveNavBtn('pmodern', currentModernYear);
@@ -873,7 +918,7 @@ function resetData(){
   toast('Данные сброшены к исходным');
 }
 function saveModernYears(){
-  queueSync();
+  metaDirty = true; queueSync();
 }
 
 function toast(msg){
@@ -1610,10 +1655,11 @@ document.getElementById('btnSave').addEventListener('click', ()=>{
   if(editingId){
     const idx = DATA.findIndex(p=>p.id===editingId);
     DATA[idx] = rec;
+    if(editingId !== rec.id) markRemoved(editingId);
   } else {
     DATA.push(rec);
   }
-  saveData();
+  markDirty(rec.id);
   closeModal();
   renderEverything();
   toast(editingId ? 'Изменения сохранены' : 'Проект добавлен');
@@ -1622,8 +1668,8 @@ document.getElementById('btnSave').addEventListener('click', ()=>{
 document.getElementById('btnDelete').addEventListener('click', ()=>{
   if(!editingId) return;
   if(!confirm('Удалить проект «'+ (DATA.find(p=>p.id===editingId)||{}).name +'»?')) return;
+  markRemoved(editingId);
   DATA = DATA.filter(p=>p.id!==editingId);
-  saveData();
   closeModal();
   renderEverything();
   toast('Проект удалён');
